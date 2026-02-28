@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
 import {AutoYieldVault} from "../src/AutoYieldVault.sol";
@@ -49,7 +49,8 @@ contract DeployAutoYieldVault is Script {
 
         AutoYieldVault vault = new AutoYieldVault(
             IERC20(usdt),
-            asterEarn
+            asterEarn,
+            address(0) // no stack receiver; 100% to AsterDEX
         );
 
         vm.stopBroadcast();

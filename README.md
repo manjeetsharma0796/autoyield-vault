@@ -64,19 +64,50 @@ User deposits USDT
 ```
 autoyield-vault/
 ├── src/
-│   ├── AutoYieldVault.sol        # Core ERC-4626 vault contract
-│   └── interfaces/
-│       └── IAsterEarn.sol        # AsterDEX Earn interface
+│   ├── AutoYieldVault.sol           # Core ERC-4626 vault (no admin, harvest by anyone)
+│   ├── interfaces/
+│   │   └── IAsterEarn.sol          # AsterDEX Earn interface
+│   └── mocks/
+│       ├── MockAsterEarn.sol       # Mock for tests
+│       └── MockERC20.sol            # Mock asset for tests
 ├── test/
-│   └── AutoYieldVault.t.sol      # Foundry test suite (unit + fuzz)
+│   └── AutoYieldVault.t.sol        # Foundry test suite (unit + fuzz)
 ├── script/
-│   └── Deploy.s.sol              # Deployment script for BNB Chain
-├── .github/
-│   └── workflows/
-│       └── ci.yml                # GitHub Actions CI
-├── foundry.toml                  # Foundry configuration
+│   ├── Deploy.s.sol                # Deploy vault to BNB Chain
+│   └── RunCycle.s.sol              # One-click harvest() script
+├── frontend/                        # React + Vite + ethers.js dashboard
+│   ├── src/
+│   │   ├── App.tsx                 # Connect, deposit, withdraw, harvest
+│   │   ├── config.ts               # Chain + vault address
+│   │   └── abis/
+│   └── package.json
+├── .github/workflows/ci.yml
+├── foundry.toml
 └── README.md
 ```
+
+## 🏛️ Architecture
+
+Single source of truth for user funds: **AutoYieldVault** (ERC-4626). All strategy logic is on-chain and permissionless.
+
+```mermaid
+flowchart LR
+  User[User]
+  Vault[AutoYieldVault]
+  AsterEarn[AsterDEX Earn]
+  Stack[Stack Receiver]
+  User -->|deposit USDT| Vault
+  Vault -->|deploy| AsterEarn
+  Vault -->|"harvest 60pct growth"| AsterEarn
+  Vault -->|"harvest 40pct hedge"| Stack
+  AsterEarn -->|yield| Vault
+  Vault -->|withdraw| User
+```
+
+- **Protect:** Vault holds accounting; no owner can move funds. Only deposit/withdraw/harvest logic.
+- **Automate:** `harvest()` is permissionless (anyone can call); 1h cooldown. No multisig or off-chain trigger.
+- **Stack:** Optional `stackReceiver`. If set, harvested rewards split 60% back to AsterDEX Earn, 40% to the receiver (e.g. hedge vault or LP).
+- **Integrate:** AsterDEX Earn is the primary yield source; BNB Chain only.
 
 ---
 
@@ -107,18 +138,22 @@ forge build
 forge test -vvv
 ```
 
-### 4. Deploy to BNB Testnet
+### 4. Deploy to BNB Testnet (recommended for demo)
+
+AsterDEX Earn is mainnet-only. On testnet we deploy **MockAsterEarn** + **AutoYieldVault** so you can run the full flow (deposit, withdraw, harvest) on BNB Testnet.
 
 ```bash
 cp .env.example .env
-# Fill in your PRIVATE_KEY and BNB_TESTNET_RPC_URL
+# Set PRIVATE_KEY and BNB_TESTNET_RPC_URL
 
-forge script script/Deploy.s.sol:DeployAutoYieldVault \
+forge script script/DeployTestnet.s.sol:DeployTestnet \
   --rpc-url $BNB_TESTNET_RPC_URL \
   --broadcast \
-  --verify \
   -vvvv
 ```
+
+Then set `VAULT_ADDRESS` (and frontend `VITE_VAULT_ADDRESS`) to the printed vault address. Get testnet USDT from a [BNB testnet faucet](https://www.bnbchain.org/en/testnet-faucet), approve the vault, then deposit. To test harvest: send USDT to the deployed MockAsterEarn, call `setPendingRewards(vaultAddress, amount)` on the mock, then call `harvest()` on the vault (after 1h cooldown or warp in tests).  
+**Full testnet steps:** see [scripts/README_TESTNET.md](scripts/README_TESTNET.md).
 
 ### 5. Deploy to BNB Mainnet
 
@@ -127,6 +162,16 @@ forge script script/Deploy.s.sol:DeployAutoYieldVault \
   --rpc-url $BNB_RPC_URL \
   --broadcast \
   --verify \
+  -vvvv
+```
+
+### 6. Run a harvest cycle (anyone, one-click)
+
+```bash
+export VAULT_ADDRESS=0xYourDeployedVault
+forge script script/RunCycle.s.sol:RunCycleHarvest \
+  --rpc-url $BNB_RPC_URL \
+  --broadcast \
   -vvvv
 ```
 
@@ -197,10 +242,40 @@ Returns the current pending rewards claimable from AsterDEX Earn.
 
 ## 🏗️ Built With
 
-- [Solidity 0.8.20](https://soliditylang.org/)
+- [Solidity 0.8.24](https://soliditylang.org/)
 - [OpenZeppelin Contracts v5](https://github.com/OpenZeppelin/openzeppelin-contracts)
 - [Foundry](https://book.getfoundry.sh/)
 - [AsterDEX Earn](https://docs.asterdex.com/) on BNB Chain
+
+---
+
+## 📜 Design Philosophy
+
+- **Why non-custodial:** Users retain full ownership via ERC-4626 shares. The contract cannot be upgraded or paused; no admin key exists. Trust is minimized to the code.
+- **Why fully on-chain:** Every action (deposit, withdraw, harvest) is a normal transaction. No keeper bots, no multisig execution. Anyone can trigger harvest; the 0.1% caller fee incentivizes it without giving control to a single party.
+- **Hedging and stacking:** The optional 60/40 split (growth vs hedge) lets yield be re-deployed: 60% compounds in AsterDEX Earn for upside, 40% can go to a stable buffer or another strategy (e.g. PancakeSwap) for resilience. This improves risk-adjusted returns without governance.
+
+---
+
+## 📋 Submission Checklist (Riquid Hackathon)
+
+- [ ] **Code:** Private GitHub repo; share with `tggeth` and `cryptocoder0x`. Clear commit history and structure.
+- [ ] **Demo video (≤3 min):** Show wallet on BNB Chain (or testnet), deposit, then trigger **Harvest** (Run cycle). Show real tx and updated UI. No slides-only.
+- [ ] **README:** Problem, solution, architecture (diagram above), design philosophy, build/test/run instructions, link to demo video.
+- [ ] **Eligibility:** BNB Chain; AsterDEX Earn as primary yield; no manual/multisig/off-chain execution; non-custodial.
+
+---
+
+## 🖥️ Frontend
+
+```bash
+cd frontend
+cp .env.example .env
+# Set VITE_VAULT_ADDRESS to your deployed vault
+npm install && npm run dev
+```
+
+Open http://localhost:5173. Connect MetaMask to BNB Chain, then deposit, withdraw, or run **Harvest** (Run cycle).
 
 ---
 
